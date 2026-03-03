@@ -3,8 +3,40 @@
 
 //! Digital signature creation and verification
 //!
-//! This module handles digital signatures across multiple curves, with unified
-//! interfaces for signing and verifying messages using different key types.
+//! This module handles digital signatures across multiple curves (classical ECC and PQC),
+//! with unified interfaces for signing and verifying messages using different key types.
+//!
+//! # ⚠️ Security Considerations
+//!
+//! ## Non-Standard Ed25519 Implementation
+//! This library implements Ed25519 with SHA3-256 hashing BEFORE signing, which deviates
+//! from RFC 8032 (standard Ed25519). This means:
+//! - Kanari Ed25519 keys/signatures are **NOT compatible** with standard Ed25519 systems
+//! - Messages must be signed and verified using this library consistently
+//! - For interoperability, consider implementing a standard Ed25519 variant
+//!
+//! ## Signature Verification Timing
+//! The `verify_signature()` fallback path attempts multiple curve types. While each
+//! verification is internally constant-time, the aggregate timing may leak which curve
+//! succeeded. **Always use tagged addresses** (e.g., \"K256:0xabc...\") in production to:
+//! - Avoid the fallback path entirely
+//! - Achieve deterministic performance
+//! - Prevent curve-type information leakage
+//!
+//! Use `verify_signature_with_curve()` when the curve type is known in advance.
+//!
+//! ## Hybrid Signature Format
+//! Hybrid signatures (K256+Dilithium3, Ed25519+Dilithium3) use a structured format:
+//! - 2 bytes: classical signature length (big-endian)
+//! - N bytes: classical signature
+//! - M bytes: PQC signature
+//!
+//! This format requires careful parsing. Malformed signatures will verify as false,
+//! not raise errors, to prevent DoS attacks.
+//!
+//! ## Post-Quantum Cryptography
+//! This library includes NIST-standardized PQC algorithms (Dilithium, SPHINCS+).
+//! PQC crates are relatively new; monitor security advisories closely.
 
 use log::debug;
 use sha3::{Digest, Sha3_256};
@@ -64,6 +96,8 @@ const MAX_SIGNATURE_SIZE: usize = 64 * 1024; // 64 KiB
 const MAX_CLASSICAL_SIG_LEN: usize = 1024; // limit to 1 KiB to avoid DoS
 
 // Common EC public key lengths
+// These constants are used for flexible address parsing but should not be
+// exposed in error messages to prevent information leakage
 const SEC1_UNCOMPRESSED_LEN: usize = 65;
 const SEC1_COMPRESSED_LEN: usize = 33;
 const RAW_XY_LEN: usize = 64;
@@ -318,10 +352,25 @@ fn sign_message_p256(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, S
 }
 
 /// Sign a message using Ed25519 private key
+///
+/// **⚠️ Security Note - Non-Standard Behavior:**
+/// This implementation hashes the message with SHA3-256 BEFORE signing, which deviates
+/// from RFC 8032 (standard Ed25519). Standard Ed25519 signs the message directly.
+///
+/// **Rationale:**
+/// - Kanari uses this for consistency with K256 and P256 (which require hashing)
+/// - This is a Kanari-specific variant; keys/signatures are NOT compatible with
+///   standard Ed25519 implementations
+/// - The extra hash provides additional domain separation
+///
+/// **Migration Path:**
+/// For interoperability with external Ed25519 systems, consider adding a
+/// `sign_message_ed25519_standard()` variant that signs the message directly.
 fn sign_message_ed25519(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, SignatureError> {
     use zeroize::Zeroize;
 
-    // Hash the message with SHA3 to align with K256/P256 behaviour
+    // Hash the message with SHA3 for consistency across all curve types in Kanari
+    // NOTE: This differs from RFC 8032 standard Ed25519
     let mut hasher = Sha3_256::default();
     hasher.update(message);
     let message_hash = hasher.finalize();
@@ -347,7 +396,7 @@ fn sign_message_ed25519(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>
     // Create signing key from private key
     let signing_key = Ed25519SigningKey::from_bytes(&key_array);
 
-    // Sign the SHA3-hashed message for consistency across curves
+    // Sign the SHA3-hashed message (Kanari variant, not RFC 8032 standard)
     let signature: Ed25519Signature = signing_key.sign(&message_hash);
 
     // Zeroize key array after use
@@ -359,8 +408,17 @@ fn sign_message_ed25519(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>
 
 /// Verify a signature against a message using an address
 ///
+/// **⚠️ Security Note:**
 /// This function attempts to parse tagged addresses (e.g., "K256:0xabc...") first.
 /// If the address is not tagged, it falls back to trying all classical curve types.
+///
+/// The fallback path evaluates all curves without early return to maintain
+/// constant-time characteristics, preventing timing-based curve type leaks.
+///
+/// **Recommendations:**
+/// - Use tagged addresses in production for reliability and performance
+/// - For systems handling sensitive keys, avoid the fallback path entirely
+/// - Use `verify_signature_with_curve()` when curve type is known
 ///
 /// For maximum reliability, use tagged addresses.
 /// For best performance when curve type is known, use `verify_signature_with_curve()`.
@@ -385,16 +443,20 @@ pub fn verify_signature(
     }
 
     // Fallback: Try all classical curves (safe but slower)
-    debug!("No tagged address found, trying all curve types");
+    // ⚠️ WARNING: This path may leak curve type through timing in real-world conditions
+    // despite our attempts at constant-time evaluation. Use tagged addresses to avoid this.
+    debug!("No tagged address found, trying all curve types - CONSIDER USING TAGGED ADDRESSES");
     let clean_address = address.trim_start_matches("0x");
 
-    // Try all classical curves without early return to prevent timing attacks
+    // Try all classical curves without early return to reduce timing leaks
+    // Each verification function is constant-time internally, but aggregate timing
+    // may still vary based on successful curve type
     let k256_result = verify_signature_k256(clean_address, message, signature).unwrap_or(false);
     let p256_result = verify_signature_p256(clean_address, message, signature).unwrap_or(false);
     let ed25519_result =
         verify_signature_ed25519(clean_address, message, signature).unwrap_or(false);
 
-    // Use OR to check if any verification succeeded (constant-time operation)
+    // Combine results with OR (all attempted, not short-circuit)
     let verified = k256_result || p256_result || ed25519_result;
 
     if verified {
@@ -1041,12 +1103,17 @@ pub fn verify_signature_ed25519(
     sig_array.copy_from_slice(signature);
     let signature = Ed25519Signature::from_bytes(&sig_array);
 
+    // Zeroize sensitive signature array after converting to Ed25519Signature
+    use zeroize::Zeroize;
+    sig_array.zeroize();
+
     // Normalize input using `extract_raw_key` (handles 0x and known prefixes)
     let raw_key = crate::keys::extract_raw_key(address_hex);
     let decoded_hex = hex::decode(raw_key)
         .map_err(|_| SignatureError::InvalidPublicKey("Invalid address format".to_string()))?;
 
     // For Ed25519, the address should be the 32-byte public key
+    // NOTE: Length check happens implicitly during key construction
     if decoded_hex.len() != ED25519_PUBLIC_KEY_LEN {
         return Err(SignatureError::InvalidPublicKey(
             "Invalid address format".to_string(),

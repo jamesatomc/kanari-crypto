@@ -7,6 +7,40 @@
 //! P256/secp256r1, Ed25519) and Post-Quantum Cryptography (Dilithium, SPHINCS+).
 //!
 //! **Quantum-Safe**: Includes NIST-standardized post-quantum algorithms.
+//!
+//! # ⚠️ Security Considerations
+//!
+//! ## Private Key Storage
+//! - Private keys are stored in `Zeroizing<String>` which automatically clears memory on drop
+//! - `Clone` is NOT implemented on `KeyPair` to prevent accidental key duplication
+//! - Use `export_private_key_secure()` to explicitly handle private key export
+//! - Private keys are **NOT serialized** by default; use `to_serializable_with_private_key()`
+//!   only for encrypted storage scenarios
+//!
+//! ## Tagged Addresses
+//! For enhanced security and reliability, use tagged addresses:
+//! - Format: `\"CurveType:address\"` (e.g., `\"K256:0xabc...\"`)
+//! - Prevents address ambiguity when multiple curves could apply
+//! - Required for secure signature verification without timing leaks
+//! - Use `tagged_address()` method to generate; use `parse_tagged_address()` to extract
+//!
+//! ## Hybrid Keys
+//! Hybrid keys (e.g., Ed25519+Dilithium3) combine classical and post-quantum algorithms:
+//! - Format: `\"CurveType:classical_pub:pqc_pub\"`
+//! - Private key format: `\"kanahybrid<classical_hex>:<pqc_secret_hex>:<pqc_pub_hex>\"`
+//! - Both classical and PQC signatures required for full verification
+//! - Use for transition period during quantum computing threat emergence
+//!
+//! ## Post-Quantum Cryptography Dependencies
+//! PQC crates (`pqcrypto_dilithium`, `pqcrypto_sphincsplus`) are relatively newer.
+//! - Monitor security advisories regularly
+//! - Consider pinning versions in production `Cargo.toml`
+//! - Dilithium3 (NIST Level 3) is recommended for most use cases
+//!
+//! ## Mnemonic Derivation Limitations
+//! - Only classical curves (K256, P256, Ed25519) support BIP39 mnemonic derivation
+//! - PQC algorithms generate fresh keys without HD wallet derivation
+//! - For PQC keys, use `generate_keypair()` for fresh key generation
 
 use bip39::{Language, Mnemonic};
 use move_core_types::account_address::AccountAddress;
@@ -385,9 +419,9 @@ fn generate_ed25519_keypair() -> Result<KeyPair, KeyError> {
 
     // Format the public key
     let hex_encoded = hex::encode(public_key_bytes);
-    // Address: SHA3-256 of public key hex (full 32-byte hash)
+    // Address: SHA3-256 of public key bytes (full 32-byte hash)
     let mut hasher = Sha3_256::default();
-    hasher.update(hex_encoded.as_bytes());
+    hasher.update(public_key_bytes);
     let digest = hasher.finalize();
     let address = format!("0x{}", hex::encode(digest));
     let raw_private_key = hex::encode(private_key_bytes);
@@ -715,10 +749,10 @@ pub fn keypair_from_private_key(
             let public_key = K256PublicKey::from(verifying_key);
 
             let encoded_point = public_key.to_encoded_point(false);
-            let mut hex_encoded = hex::encode(&encoded_point.as_bytes()[1..]);
-            hex_encoded.truncate(64);
+            let slice = skip_uncompressed_point_prefix(encoded_point.as_bytes());
+            let hex_encoded = hex::encode(slice);
 
-            // Address: SHA3-256 of public key hex
+            // Address: SHA3-256 of public key hex (must match generation function)
             let mut hasher = Sha3_256::default();
             hasher.update(hex_encoded.as_bytes());
             let digest = hasher.finalize();
@@ -752,11 +786,14 @@ pub fn keypair_from_private_key(
             let verifying_key = VerifyingKey::from(&signing_key);
             let public_key = verifying_key.to_encoded_point(false);
 
-            let mut hex_encoded = hex::encode(&public_key.as_bytes()[1..]);
-            hex_encoded.truncate(64);
+            let slice = skip_uncompressed_point_prefix(public_key.as_bytes());
+            let hex_encoded = hex::encode(slice);
 
-            // Keep legacy behavior: address is the (truncated) public key hex prefixed with 0x
-            let address = format!("0x{}", hex_encoded);
+            // Address: SHA3-256 of public key hex (must match generation function)
+            let mut hasher = Sha3_256::default();
+            hasher.update(hex_encoded.as_bytes());
+            let digest = hasher.finalize();
+            let address = format!("0x{}", hex::encode(digest));
 
             // Format with kanari prefix if not already formatted
             let formatted_private_key = if private_key.starts_with(KANARI_KEY_PREFIX) {
@@ -795,8 +832,12 @@ pub fn keypair_from_private_key(
 
             let public_key_bytes = verifying_key.to_bytes();
             let hex_encoded = hex::encode(public_key_bytes);
-            // Keep legacy behavior: address is the public key hex prefixed with 0x
-            let address = format!("0x{}", hex_encoded);
+
+            // Address: SHA3-256 of public key hex (must match generation function)
+            let mut hasher = Sha3_256::default();
+            hasher.update(hex_encoded.as_bytes());
+            let digest = hasher.finalize();
+            let address = format!("0x{}", hex::encode(digest));
 
             // Format with kanari prefix if not already formatted
             let formatted_private_key = if private_key.starts_with(KANARI_KEY_PREFIX) {
