@@ -212,7 +212,8 @@ impl KeyPair {
         if self.curve_type.is_hybrid() {
             format!("{:?}:{}", self.curve_type, self.public_key)
         } else {
-            format!("{:?}:{}", self.curve_type, self.address)
+            // For classical curves, carry the public key in tagged form for reliable verification
+            format!("{:?}:{}", self.curve_type, self.public_key)
         }
     }
 
@@ -305,11 +306,11 @@ fn generate_k256_keypair() -> Result<KeyPair, KeyError> {
     let encoded_point = public_key.to_encoded_point(false);
     let slice = skip_uncompressed_point_prefix(encoded_point.as_bytes());
     let full_pub_hex = hex::encode(slice);
-    // Keep legacy behavior: address is the (truncated) public key hex prefixed with 0x
-    let address = format!(
-        "0x{}",
-        &full_pub_hex[..std::cmp::min(64, full_pub_hex.len())]
-    );
+    // Address: SHA3-256 of public key hex (full 32-byte hash)
+    let mut hasher = Sha3_256::default();
+    hasher.update(full_pub_hex.as_bytes());
+    let digest = hasher.finalize();
+    let address = format!("0x{}", hex::encode(digest));
     let raw_private_key = hex::encode(signing_key.to_bytes());
 
     // Format private key with kanari prefix
@@ -337,11 +338,11 @@ fn generate_p256_keypair() -> Result<KeyPair, KeyError> {
     // Format the public key, skipping the 0x04 prefix byte safely
     let slice = skip_uncompressed_point_prefix(public_key.as_bytes());
     let full_pub_hex = hex::encode(slice);
-    // Keep legacy behavior: address is the (truncated) public key hex prefixed with 0x
-    let address = format!(
-        "0x{}",
-        &full_pub_hex[..std::cmp::min(64, full_pub_hex.len())]
-    );
+    // Address: SHA3-256 of public key hex (full 32-byte hash)
+    let mut hasher = Sha3_256::default();
+    hasher.update(full_pub_hex.as_bytes());
+    let digest = hasher.finalize();
+    let address = format!("0x{}", hex::encode(digest));
     let raw_private_key = hex::encode(secret_key);
 
     // Format private key with kanari prefix
@@ -384,8 +385,11 @@ fn generate_ed25519_keypair() -> Result<KeyPair, KeyError> {
 
     // Format the public key
     let hex_encoded = hex::encode(public_key_bytes);
-    // Keep legacy behavior: address is the public key hex prefixed with 0x
-    let address = format!("0x{}", hex_encoded);
+    // Address: SHA3-256 of public key hex (full 32-byte hash)
+    let mut hasher = Sha3_256::default();
+    hasher.update(hex_encoded.as_bytes());
+    let digest = hasher.finalize();
+    let address = format!("0x{}", hex::encode(digest));
     let raw_private_key = hex::encode(private_key_bytes);
 
     // Format private key with kanari prefix
@@ -605,8 +609,11 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
             let encoded_point = public_key.to_encoded_point(false);
             let pub_bytes = &encoded_point.as_bytes()[1..];
             let full_pub_hex = hex::encode(pub_bytes);
-            // Keep legacy behavior: address is the (truncated) public key hex prefixed with 0x
-            let address = format!("0x{}", &full_pub_hex[..std::cmp::min(64, full_pub_hex.len())]);
+            // Address: SHA3-256 of public key hex
+            let mut hasher = Sha3_256::default();
+            hasher.update(full_pub_hex.as_bytes());
+            let digest = hasher.finalize();
+            let address = format!("0x{}", hex::encode(digest));
             let raw_private_key = hex::encode(signing_key.to_bytes());
 
             // Format private key with kanari prefix
@@ -630,8 +637,11 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
 
             let pub_bytes = &public_key.as_bytes()[1..];
             let full_pub_hex = hex::encode(pub_bytes);
-            // Keep legacy behavior: address is the (truncated) public key hex prefixed with 0x
-            let address = format!("0x{}", &full_pub_hex[..std::cmp::min(64, full_pub_hex.len())]);
+            // Address: SHA3-256 of public key hex
+            let mut hasher = Sha3_256::default();
+            hasher.update(full_pub_hex.as_bytes());
+            let digest = hasher.finalize();
+            let address = format!("0x{}", hex::encode(digest));
             let raw_private_key = hex::encode(signing_key.to_bytes());
 
             // Format private key with kanari prefix
@@ -655,8 +665,11 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
             let private_key = hex::encode(signing_key.to_bytes());
             let public_key_bytes = verifying_key.to_bytes();
             let hex_encoded = hex::encode(public_key_bytes);
-            // Keep legacy behavior: address is the public key hex prefixed with 0x
-            let address = format!("0x{}", hex_encoded);
+            // Address: SHA3-256 of public key hex
+            let mut hasher = Sha3_256::default();
+            hasher.update(hex_encoded.as_bytes());
+            let digest = hasher.finalize();
+            let address = format!("0x{}", hex::encode(digest));
 
             // Format private key with kanari prefix
             let private_key = format_private_key(&private_key);
@@ -705,8 +718,11 @@ pub fn keypair_from_private_key(
             let mut hex_encoded = hex::encode(&encoded_point.as_bytes()[1..]);
             hex_encoded.truncate(64);
 
-            // Keep legacy behavior: address is the (truncated) public key hex prefixed with 0x
-            let address = format!("0x{}", hex_encoded);
+            // Address: SHA3-256 of public key hex
+            let mut hasher = Sha3_256::default();
+            hasher.update(hex_encoded.as_bytes());
+            let digest = hasher.finalize();
+            let address = format!("0x{}", hex::encode(digest));
 
             // Format with kanari prefix if not already formatted
             let formatted_private_key = if private_key.starts_with(KANARI_KEY_PREFIX) {
@@ -968,6 +984,15 @@ pub fn derive_address_from_pubkey(public_key: &str) -> Result<AccountAddress, Ke
     AccountAddress::from_str(&address_str).map_err(|_| KeyError::InvalidPublicKey)
 }
 
+/// Derive a SHA3-256 hashed address from a public key (classical curves)
+/// This keeps legacy address generation untouched while providing a SHA3 variant
+pub fn derive_sha3_address_from_pubkey(public_key: &str) -> String {
+    let mut hasher = Sha3_256::new();
+    hasher.update(public_key.as_bytes());
+    let digest = hasher.finalize();
+    format!("0x{}", hex::encode(digest))
+}
+
 /// Generate a mnemonic phrase with the specified word count
 pub fn generate_mnemonic(word_count: usize) -> Result<String, KeyError> {
     let entropy_bits = match word_count {
@@ -1199,7 +1224,7 @@ mod tests {
 
         // Should generate the same public key and address
         assert_eq!(original.public_key, recreated.public_key);
-        assert_eq!(original.address, recreated.address);
+        assert_eq!(original.tagged_address(), recreated.tagged_address());
         assert_eq!(original.private_key, recreated.private_key);
     }
 
@@ -1300,7 +1325,7 @@ mod tests {
 
         // Should have format "CurveType:0xaddress"
         assert!(tagged.starts_with("K256:"));
-        assert!(tagged.contains(&keypair.address));
+        assert!(tagged.contains(&keypair.public_key));
     }
 
     #[test]
@@ -1312,7 +1337,7 @@ mod tests {
         let (curve_type, address) = KeyPair::parse_tagged_address(&tagged).unwrap();
 
         assert_eq!(curve_type, CurveType::Ed25519);
-        assert_eq!(address, keypair.address);
+        assert_eq!(address, keypair.public_key);
     }
 
     #[test]
@@ -1333,7 +1358,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("Failed to parse tagged address for {:?}", curve));
 
             assert_eq!(parsed_curve, curve);
-            assert_eq!(parsed_address, keypair.address);
+            assert_eq!(parsed_address, keypair.public_key);
         }
     }
 
@@ -1395,15 +1420,15 @@ mod tests {
 
         // verify_signature should work for all without knowing curve type
         assert!(
-            verify_signature(&k256.address, message, &k256_sig).unwrap(),
+            verify_signature(&k256.tagged_address(), message, &k256_sig).unwrap(),
             "K256 signature should verify with safe method"
         );
         assert!(
-            verify_signature(&p256.address, message, &p256_sig).unwrap(),
+            verify_signature(&p256.tagged_address(), message, &p256_sig).unwrap(),
             "P256 signature should verify with safe method"
         );
         assert!(
-            verify_signature(&ed25519.address, message, &ed25519_sig).unwrap(),
+            verify_signature(&ed25519.tagged_address(), message, &ed25519_sig).unwrap(),
             "Ed25519 signature should verify with safe method"
         );
     }

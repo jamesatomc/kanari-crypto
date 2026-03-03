@@ -321,6 +321,11 @@ fn sign_message_p256(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, S
 fn sign_message_ed25519(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, SignatureError> {
     use zeroize::Zeroize;
 
+    // Hash the message with SHA3 to align with K256/P256 behaviour
+    let mut hasher = Sha3_256::default();
+    hasher.update(message);
+    let message_hash = hasher.finalize();
+
     // Convert hex private key to bytes with zeroization
     let mut private_key_bytes = hex::decode(private_key_hex)
         .map_err(|_| SignatureError::InvalidPrivateKey("Invalid private key".to_string()))?;
@@ -342,8 +347,8 @@ fn sign_message_ed25519(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>
     // Create signing key from private key
     let signing_key = Ed25519SigningKey::from_bytes(&key_array);
 
-    // Sign the message directly (Ed25519 doesn't need pre-hashing)
-    let signature: Ed25519Signature = signing_key.sign(message);
+    // Sign the SHA3-hashed message for consistency across curves
+    let signature: Ed25519Signature = signing_key.sign(&message_hash);
 
     // Zeroize key array after use
     key_array.zeroize();
@@ -1021,6 +1026,11 @@ pub fn verify_signature_ed25519(
     message: &[u8],
     signature: &[u8],
 ) -> Result<bool, SignatureError> {
+    // Hash the message with SHA3 to align with signing behaviour
+    let mut hasher = Sha3_256::default();
+    hasher.update(message);
+    let message_hash = hasher.finalize();
+
     // Check if signature has correct length for Ed25519
     if signature.len() != 64 {
         return Err(SignatureError::InvalidSignatureLength);
@@ -1052,7 +1062,7 @@ pub fn verify_signature_ed25519(
         .map_err(|_| SignatureError::InvalidPublicKey("Invalid address format".to_string()))?;
 
     // Verification result (constant-time internally)
-    match verifying_key.verify(message, &signature) {
+    match verifying_key.verify(&message_hash, &signature) {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
@@ -1080,8 +1090,12 @@ mod tests {
         let signature = sign_message(&keypair.private_key, message, CurveType::Ed25519).unwrap();
 
         // Verification should succeed
-        let result =
-            verify_signature_with_curve(&keypair.address, message, &signature, CurveType::Ed25519);
+        let result = verify_signature_with_curve(
+            &keypair.public_key,
+            message,
+            &signature,
+            CurveType::Ed25519,
+        );
         assert!(result.is_ok());
         assert!(result.unwrap());
 
@@ -1091,7 +1105,7 @@ mod tests {
 
         // Verification should fail - this uses constant-time comparison internally
         let result = verify_signature_with_curve(
-            &keypair.address,
+            &keypair.public_key,
             message,
             &bad_signature,
             CurveType::Ed25519,
@@ -1219,7 +1233,7 @@ mod tests {
 
         let signature = sign_message(&keypair.private_key, message, CurveType::K256).unwrap();
         let verified =
-            verify_signature_with_curve(&keypair.address, message, &signature, CurveType::K256)
+            verify_signature_with_curve(&keypair.public_key, message, &signature, CurveType::K256)
                 .unwrap();
 
         assert!(verified, "K256 signature should verify");
@@ -1232,7 +1246,7 @@ mod tests {
 
         let signature = sign_message(&keypair.private_key, message, CurveType::P256).unwrap();
         let verified =
-            verify_signature_with_curve(&keypair.address, message, &signature, CurveType::P256)
+            verify_signature_with_curve(&keypair.public_key, message, &signature, CurveType::P256)
                 .unwrap();
 
         assert!(verified, "P256 signature should verify");
@@ -1244,9 +1258,13 @@ mod tests {
         let message = b"Hello, Ed25519!";
 
         let signature = sign_message(&keypair.private_key, message, CurveType::Ed25519).unwrap();
-        let verified =
-            verify_signature_with_curve(&keypair.address, message, &signature, CurveType::Ed25519)
-                .unwrap();
+        let verified = verify_signature_with_curve(
+            &keypair.public_key,
+            message,
+            &signature,
+            CurveType::Ed25519,
+        )
+        .unwrap();
 
         assert!(verified, "Ed25519 signature should verify");
     }
@@ -1272,9 +1290,13 @@ mod tests {
         let message = b"Test message";
 
         let signature = sign_message(&keypair1.private_key, message, CurveType::Ed25519).unwrap();
-        let verified =
-            verify_signature_with_curve(&keypair2.address, message, &signature, CurveType::Ed25519)
-                .unwrap();
+        let verified = verify_signature_with_curve(
+            &keypair2.public_key,
+            message,
+            &signature,
+            CurveType::Ed25519,
+        )
+        .unwrap();
 
         assert!(
             !verified,
@@ -1322,8 +1344,9 @@ mod tests {
 
         let signature = sign_message(&keypair.private_key, message, CurveType::K256).unwrap();
 
-        // Test the legacy verify_signature API
-        let verified = verify_signature(&keypair.address, message, &signature).unwrap();
+        // Use tagged address for verification (carries public key for classical curves)
+        let tagged = keypair.tagged_address();
+        let verified = verify_signature(&tagged, message, &signature).unwrap();
         assert!(verified);
     }
 
@@ -1411,8 +1434,9 @@ mod tests {
 
             let signature = sign_message(&keypair.private_key, message, curve).unwrap();
 
-            // verify_signature_safe should work without knowing the curve
-            let result = verify_signature(&keypair.address, message, &signature).unwrap();
+            // verify_signature should work with tagged address carrying curve and public key
+            let tagged = keypair.tagged_address();
+            let result = verify_signature(&tagged, message, &signature).unwrap();
             assert!(result, "Safe verification failed for {:?}", curve);
         }
     }
@@ -1511,7 +1535,7 @@ mod tests {
         let signature = sign_message(&keypair.private_key, message, CurveType::K256).unwrap();
 
         // Use untagged address - should fallback to verify_signature_safe
-        let result = verify_signature(&keypair.address, message, &signature).unwrap();
+        let result = verify_signature(&keypair.tagged_address(), message, &signature).unwrap();
 
         assert!(
             result,
