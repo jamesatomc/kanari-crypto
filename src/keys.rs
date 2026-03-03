@@ -43,7 +43,6 @@
 //! - For PQC keys, use `generate_keypair()` for fresh key generation
 
 use bip39::{Language, Mnemonic};
-use move_core_types::account_address::AccountAddress;
 use rand::RngCore;
 use rand::rngs::OsRng;
 use sha3::{Digest, Sha3_256};
@@ -1017,21 +1016,6 @@ pub fn keypair_from_private_key(
             })
         } // All CurveType variants are handled above; no catch-all arm needed.
     }
-}
-
-/// Derive an Address type from a public key
-pub fn derive_address_from_pubkey(public_key: &str) -> Result<AccountAddress, KeyError> {
-    let address_str = format!("0x{}", public_key);
-    AccountAddress::from_str(&address_str).map_err(|_| KeyError::InvalidPublicKey)
-}
-
-/// Derive a SHA3-256 hashed address from a public key (classical curves)
-/// This keeps legacy address generation untouched while providing a SHA3 variant
-pub fn derive_sha3_address_from_pubkey(public_key: &str) -> String {
-    let mut hasher = Sha3_256::new();
-    hasher.update(public_key.as_bytes());
-    let digest = hasher.finalize();
-    format!("0x{}", hex::encode(digest))
 }
 
 /// Generate a mnemonic phrase with the specified word count
