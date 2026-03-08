@@ -1501,7 +1501,7 @@ mod tests {
 
         let signature = sign_message(&keypair.private_key, message1, CurveType::K256).unwrap();
         let verified =
-            verify_signature_with_curve(&keypair.address, message2, &signature, CurveType::K256)
+            verify_signature_with_curve(&keypair.public_key, message2, &signature, CurveType::K256)
                 .unwrap();
 
         assert!(!verified, "Signature should not verify with wrong message");
@@ -1711,7 +1711,7 @@ mod tests {
     }
 
     #[test]
-    fn test_malformed_hybrid_signature_fallback_and_reject() {
+    fn test_malformed_hybrid_signature_and_reject() {
         // Generate hybrid keypair and a proper signature
         let keypair = generate_keypair(CurveType::K256Dilithium3).unwrap();
         let message = b"Malformed hybrid test";
@@ -1751,19 +1751,22 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_signature_to_safe() {
-        // Test that verify_signature falls back to safe mode for untagged addresses
+    fn test_verify_signature_requires_tagged_address() {
+        // Test that verify_signature requires tagged address (no fallback)
         let keypair = generate_keypair(CurveType::K256).unwrap();
-        let message = b"Fallback test";
-
+        let message = b"Tagged address test";
         let signature = sign_message(&keypair.private_key, message, CurveType::K256).unwrap();
 
-        // Use untagged address - should fallback to verify_signature_safe
+        // Use tagged address - should succeed
         let result = verify_signature(&keypair.tagged_address(), message, &signature).unwrap();
 
+        assert!(result, "Verification should succeed with tagged address");
+
+        // Untagged address should fail
+        let untagged_result = verify_signature(&keypair.address, message, &signature);
         assert!(
-            result,
-            "Verification with untagged address should succeed via fallback"
+            untagged_result.is_err(),
+            "Verification should fail with untagged address"
         );
     }
 

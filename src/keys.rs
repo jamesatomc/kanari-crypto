@@ -109,15 +109,15 @@ pub enum CurveType {
 impl fmt::Display for CurveType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CurveType::K256 => write!(f, "K256 (secp256k1)"),
-            CurveType::P256 => write!(f, "P256 (secp256r1)"),
+            CurveType::K256 => write!(f, "K256"),
+            CurveType::P256 => write!(f, "P256"),
             CurveType::Ed25519 => write!(f, "Ed25519"),
-            CurveType::Dilithium2 => write!(f, "Dilithium2 (PQC Level 2)"),
-            CurveType::Dilithium3 => write!(f, "Dilithium3 (PQC Level 3)"),
-            CurveType::Dilithium5 => write!(f, "Dilithium5 (PQC Level 5)"),
-            CurveType::SphincsPlusSha256Robust => write!(f, "SPHINCS+ SHA256 (Ultra-Secure PQC)"),
-            CurveType::Ed25519Dilithium3 => write!(f, "Ed25519+Dilithium3 (Hybrid)"),
-            CurveType::K256Dilithium3 => write!(f, "K256+Dilithium3 (Hybrid)"),
+            CurveType::Dilithium2 => write!(f, "Dilithium2"),
+            CurveType::Dilithium3 => write!(f, "Dilithium3"),
+            CurveType::Dilithium5 => write!(f, "Dilithium5"),
+            CurveType::SphincsPlusSha256Robust => write!(f, "SphincsPlusSha256Robust"),
+            CurveType::Ed25519Dilithium3 => write!(f, "Ed25519Dilithium3"),
+            CurveType::K256Dilithium3 => write!(f, "K256Dilithium3"),
         }
     }
 }
@@ -204,7 +204,6 @@ impl fmt::Debug for KeyPair {
 
 impl FromStr for CurveType {
     type Err = String;
-
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "K256" => Ok(CurveType::K256),
@@ -253,12 +252,8 @@ impl KeyPair {
     /// For hybrid keys, format is "curve_type:classical_pub:pqc_pub"
     /// This is the recommended way to store addresses for reliable curve detection
     pub fn tagged_address(&self) -> String {
-        if self.curve_type.is_hybrid() {
-            format!("{:?}:{}", self.curve_type, self.public_key)
-        } else {
-            // For classical curves, carry the public key in tagged form for reliable verification
-            format!("{:?}:{}", self.curve_type, self.public_key)
-        }
+        // For hybrid keys, include both classical and PQC public keys in the tag
+        format!("{}:{}", self.curve_type, self.public_key)
     }
 
     /// Create a serializable version that includes private key (use with caution)
@@ -570,9 +565,7 @@ fn generate_hybrid_ed25519_dilithium3_keypair() -> Result<KeyPair, KeyError> {
     let ed25519_raw = extract_raw_key(&ed25519_pair.private_key);
     // Extract dilithium3 raw key (remove "kanapqc" prefix to get just the hex)
     let dilithium3_with_prefix = &dilithium3_pair.private_key;
-    let dilithium3_raw = dilithium3_with_prefix
-        .strip_prefix("kanapqc")
-        .unwrap_or(dilithium3_with_prefix);
+    let dilithium3_raw = crate::keys::extract_raw_key(dilithium3_with_prefix);
     let combined_private = format!("kanahybrid{}:{}", ed25519_raw, dilithium3_raw);
 
     // Generate hybrid address using SHA3-256 hash of combined public key
@@ -604,9 +597,7 @@ fn generate_hybrid_k256_dilithium3_keypair() -> Result<KeyPair, KeyError> {
     let k256_raw = extract_raw_key(&k256_pair.private_key);
     // Extract dilithium3 raw key (remove "kanapqc" prefix to get just the hex)
     let dilithium3_with_prefix = &dilithium3_pair.private_key;
-    let dilithium3_raw = dilithium3_with_prefix
-        .strip_prefix("kanapqc")
-        .unwrap_or(dilithium3_with_prefix);
+    let dilithium3_raw = crate::keys::extract_raw_key(dilithium3_with_prefix); // ✅
     let combined_private = format!("kanahybrid{}:{}", k256_raw, dilithium3_raw);
 
     // Generate hybrid address using SHA3-256 hash of combined public key
@@ -1757,12 +1748,12 @@ mod tests {
 
     #[test]
     fn test_ed25519_dilithium3_display_format() {
-        // Test display format for Ed25519Dilithium3
         let curve = CurveType::Ed25519Dilithium3;
         let display = format!("{}", curve);
 
         assert_eq!(
-            display, "Ed25519+Dilithium3 (Hybrid)",
+            display,
+            "Ed25519Dilithium3",
             "Display format must be correct"
         );
     }
