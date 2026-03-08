@@ -638,10 +638,11 @@ pub fn verify_signature_with_curve(
                 verify_signature_k256(classical, message, classical_sig).unwrap_or(false);
 
             // Verify PQC part (must succeed)
-            let pqc_pub = addr.split_once(':').map(|x| x.1).unwrap_or("");
-            if pqc_pub.is_empty() || pqc_sig.is_empty() {
-                return Ok(false);
+            let parts: Vec<&str> = addr.splitn(2, ':').collect();
+            if parts.len() != 2 {
+                return Ok(false); // หรือ Err แล้วแต่ policy
             }
+            let pqc_pub = parts[1];
             // Strip known prefixes like "kanapqc" if present, then decode
             let pqc_pub_raw = crate::keys::extract_raw_key(pqc_pub);
             let pub_bytes = match hex::decode(pqc_pub_raw) {
@@ -693,10 +694,11 @@ pub fn verify_signature_with_curve(
             let classical_ok =
                 verify_signature_ed25519(classical, message, classical_sig).unwrap_or(false);
 
-            let pqc_pub = addr.split_once(':').map(|x| x.1).unwrap_or("");
-            if pqc_pub.is_empty() || pqc_sig.is_empty() {
-                return Ok(false);
+            let parts: Vec<&str> = addr.splitn(2, ':').collect();
+            if parts.len() != 2 {
+                return Ok(false); // หรือ Err แล้วแต่ policy
             }
+            let pqc_pub = parts[1];
             let pqc_pub_raw = crate::keys::extract_raw_key(pqc_pub);
             let pub_bytes = match hex::decode(pqc_pub_raw) {
                 Ok(b) => b,
