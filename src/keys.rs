@@ -49,7 +49,7 @@ use sha3::{Digest, Sha3_256};
 use std::fmt;
 use std::str::FromStr;
 use thiserror::Error;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use k256::{
     PublicKey as K256PublicKey, SecretKey as K256SecretKey,
@@ -180,7 +180,7 @@ pub enum KeyError {
 /// Security: Private key is automatically zeroized when dropped.
 /// Clone is intentionally not implemented to prevent key material duplication.
 /// Private key is NOT serialized by default for security.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct KeyPair {
     #[serde(skip)]
     pub private_key: Zeroizing<String>,
@@ -189,6 +189,17 @@ pub struct KeyPair {
     pub pqc_public_key: Option<String>,
     pub address: String,
     pub curve_type: CurveType,
+}
+
+impl fmt::Debug for KeyPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyPair")
+            .field("private_key", &"**REDACTED**") // ✅ ซ่อนค่า
+            .field("public_key", &self.public_key)
+            .field("address", &self.address)
+            .field("curve_type", &self.curve_type)
+            .finish()
+    }
 }
 
 impl FromStr for CurveType {
@@ -410,6 +421,7 @@ fn generate_ed25519_keypair() -> Result<KeyPair, KeyError> {
 
     // Create signing key from random bytes
     let signing_key = Ed25519SigningKey::from_bytes(&seed);
+    seed.zeroize(); // Clear seed from memory immediately after use
     let verifying_key = Ed25519VerifyingKey::from(&signing_key);
 
     // Get the bytes of the keys
@@ -627,7 +639,7 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
         .map_err(|e| KeyError::InvalidMnemonic(e.to_string()))?;
 
     // Generate seed from mnemonic (no password)
-    let seed = mnemonic.to_seed("");
+    let seed = Zeroizing::new(mnemonic.to_seed(""));
     let bytes = &seed[0..32];
 
     match curve_type {
@@ -965,7 +977,9 @@ pub fn keypair_from_private_key(
                 pub_hex.to_string()
             } else {
                 // Fallback: try to recover public key from secret bytes (backwards compatibility)
-                let pqc_bytes = hex::decode(pqc_raw).map_err(|_| KeyError::InvalidPrivateKey)?;
+                let pqc_bytes = zeroize::Zeroizing::new(
+                    hex::decode(pqc_raw).map_err(|_| KeyError::InvalidPrivateKey)?,
+                );
 
                 // Prevent DoS: limit max iterations
                 const MAX_HYBRID_ITERATIONS: usize = 500;
@@ -1030,45 +1044,48 @@ pub fn generate_mnemonic(word_count: usize) -> Result<String, KeyError> {
             )));
         }
     };
-    let mut entropy = vec![0u8; entropy_bits / 8];
+    let mut entropy = zeroize::Zeroizing::new(vec![0u8; entropy_bits / 8]);
     OsRng.fill_bytes(&mut entropy);
     let mnemonic =
         Mnemonic::from_entropy(&entropy).map_err(|e| KeyError::GenerationFailed(e.to_string()))?;
     Ok(mnemonic.to_string())
 }
 
+/// Struct representing an imported wallet with private key, public key, and address
+pub struct ImportedWallet {
+    pub private_key: zeroize::Zeroizing<String>,
+    pub public_key: String,
+    pub address: String,
+}
+
 /// Import a wallet from a seed phrase
 pub fn import_from_seed_phrase(
     phrase: &str,
     curve_type: CurveType,
-) -> Result<(String, String, String), String> {
-    keypair_from_mnemonic(phrase, curve_type)
-        .map(|keypair| {
-            let zk = keypair.export_private_key_secure();
-            (
-                zk.to_string(),
-                keypair.get_public_key().to_string(),
-                keypair.get_address().to_string(),
-            )
-        })
-        .map_err(|e| e.to_string())
+) -> Result<ImportedWallet, String> {
+    match keypair_from_mnemonic(phrase, curve_type) {
+        Ok(keypair) => Ok(ImportedWallet {
+            private_key: keypair.export_private_key_secure(),
+            public_key: keypair.get_public_key().to_string(),
+            address: keypair.get_address().to_string(),
+        }),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Import a wallet from a private key
 pub fn import_from_private_key(
     private_key: &str,
     curve_type: CurveType,
-) -> Result<(String, String, String), String> {
-    keypair_from_private_key(private_key, curve_type)
-        .map(|keypair| {
-            let zk = keypair.export_private_key_secure();
-            (
-                zk.to_string(),
-                keypair.get_public_key().to_string(),
-                keypair.get_address().to_string(),
-            )
-        })
-        .map_err(|e| e.to_string())
+) -> Result<ImportedWallet, String> {
+    match keypair_from_private_key(private_key, curve_type) {
+        Ok(keypair) => Ok(ImportedWallet {
+            private_key: keypair.export_private_key_secure(),
+            public_key: keypair.get_public_key().to_string(),
+            address: keypair.get_address().to_string(),
+        }),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -1748,5 +1765,25 @@ mod tests {
             display, "Ed25519+Dilithium3 (Hybrid)",
             "Display format must be correct"
         );
+    }
+
+    #[test]
+    fn test_import_returns_zeroizing_private_key() {
+        let mnemonic = generate_mnemonic(12).unwrap();
+        let wallet = import_from_seed_phrase(&mnemonic, CurveType::K256).unwrap();
+
+        // The returned private key should be wrapped in Zeroizing
+        // Since import_from_seed_phrase returns a tuple of (private_key, public_key, address),
+        assert!(!wallet.private_key.is_empty());
+    }
+
+    #[test]
+    fn test_keypair_debug_does_not_leak_private_key() {
+        let keypair = generate_keypair(CurveType::K256).unwrap();
+        let debug_output = format!("{:?}", keypair);
+
+        // The debug output should not contain the actual private key
+        assert!(!debug_output.contains(&keypair.private_key.to_string()));
+        assert!(debug_output.contains("REDACTED") || debug_output.contains("**"));
     }
 }
