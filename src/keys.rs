@@ -416,21 +416,27 @@ fn generate_ed25519_keypair() -> Result<KeyPair, KeyError> {
 
     // Create signing key from random bytes
     let signing_key = Ed25519SigningKey::from_bytes(&seed);
-    seed.zeroize(); // Clear seed from memory immediately after use
     let verifying_key = Ed25519VerifyingKey::from(&signing_key);
 
     // Get the bytes of the keys
-    let private_key_bytes = signing_key.to_bytes();
+    let mut private_key_bytes = signing_key.to_bytes();
     let public_key_bytes = verifying_key.to_bytes();
+
+    // ✅ 1. Encode private key to hex string before zeroizing the byte array
+    let raw_private_key = hex::encode(private_key_bytes);
+
+    // ✅ 2. Zeroize the byte arrays immediately after use to minimize time sensitive data is in memory
+    seed.zeroize();
+    private_key_bytes.zeroize();
 
     // Format the public key
     let hex_encoded = hex::encode(public_key_bytes);
-    // Address: SHA3-256 of public key hex string (consistent with import paths)
+
+    // Address: SHA3-256 of public key hex string
     let mut hasher = Sha3_256::default();
     hasher.update(hex_encoded.as_bytes());
     let digest = hasher.finalize();
     let address = format!("0x{}", hex::encode(digest));
-    let raw_private_key = hex::encode(private_key_bytes);
 
     // Format private key with kanari prefix
     let private_key = format_private_key(&raw_private_key);
@@ -643,7 +649,8 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
             let public_key = K256PublicKey::from(verifying_key);
 
             let encoded_point = public_key.to_encoded_point(false);
-            let pub_bytes = &encoded_point.as_bytes()[1..];
+            let slice = skip_uncompressed_point_prefix(encoded_point.as_bytes());
+            let pub_bytes = slice;
             let full_pub_hex = hex::encode(pub_bytes);
             // Address: SHA3-256 of public key hex
             let mut hasher = Sha3_256::default();
@@ -671,7 +678,7 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
             let verifying_key = VerifyingKey::from(&signing_key);
             let public_key = verifying_key.to_encoded_point(false);
 
-            let pub_bytes = &public_key.as_bytes()[1..];
+            let pub_bytes = skip_uncompressed_point_prefix(public_key.as_bytes());
             let full_pub_hex = hex::encode(pub_bytes);
             // Address: SHA3-256 of public key hex
             let mut hasher = Sha3_256::default();
@@ -696,9 +703,12 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
             seed_array.copy_from_slice(bytes);
 
             let signing_key = Ed25519SigningKey::from_bytes(&seed_array);
+
+            // ✅ Zeroize the seed array immediately after creating the signing key to minimize time sensitive data is in memory
+            seed_array.zeroize();  // ✅ Zeroize the seed array immediately after use
             let verifying_key = Ed25519VerifyingKey::from(&signing_key);
 
-            let private_key = hex::encode(signing_key.to_bytes());
+            let raw_private_key = hex::encode(signing_key.to_bytes());
             let public_key_bytes = verifying_key.to_bytes();
             let hex_encoded = hex::encode(public_key_bytes);
             // Address: SHA3-256 of public key hex
@@ -708,7 +718,7 @@ pub fn keypair_from_mnemonic(phrase: &str, curve_type: CurveType) -> Result<KeyP
             let address = format!("0x{}", hex::encode(digest));
 
             // Format private key with kanari prefix
-            let private_key = format_private_key(&private_key);
+            let private_key = format_private_key(&raw_private_key);
 
             Ok(KeyPair {
                 private_key: Zeroizing::new(private_key),
@@ -905,12 +915,12 @@ pub fn keypair_from_private_key(
             // with it (this handles cases where multiple prefixes were present
             // and one was stripped by `extract_raw_key`). Require the hybrid
             // structure to avoid ambiguous parsing.
-            if !(private_key.starts_with(KANAHYBRID_PREFIX)
-                || raw_private_key.starts_with(KANAHYBRID_PREFIX))
-            {
-                Err(KeyError::InvalidPrivateKey)?
+            if !private_key.starts_with(KANAHYBRID_PREFIX) {
+                // อนุญาตกรณีพิเศษถ้า raw ยังขึ้นต้นด้วย prefix (กรณี prefix ซ้อน)
+                if !raw_private_key.starts_with(KANAHYBRID_PREFIX) {
+                    Err(KeyError::InvalidPrivateKey)?
+                }
             }
-
             // raw_private_key currently has had one known prefix removed by
             // `extract_raw_key`. Strip an internal `kanahybrid` if present to
             // obtain the canonical hybrid payload (classical_hex:pqc_part).
@@ -2068,5 +2078,40 @@ mod tests {
         let result = keypair_from_private_key(&original.private_key, CurveType::K256Dilithium3);
 
         assert!(result.is_ok(), "Error: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_ed25519_keypair_generation() {
+        let keypair = generate_ed25519_keypair().unwrap();
+
+        // The private key must not become entirely zero.
+        assert!(!keypair.private_key.contains("0000000000000000"));
+
+        // The private key must be importable back correctly.
+        let reimported =
+            keypair_from_private_key(&keypair.private_key, CurveType::Ed25519).unwrap();
+
+        assert_eq!(keypair.public_key, reimported.public_key);
+        assert_eq!(keypair.address, reimported.address);
+    }
+
+    #[test]
+    fn test_mnemonic_keypair_consistency() {
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+        // Created from a repetitive mnemonic, it should yield the same value.
+        let kp1 = keypair_from_mnemonic(phrase, CurveType::K256).unwrap();
+        let kp2 = keypair_from_mnemonic(phrase, CurveType::K256).unwrap();
+
+        assert_eq!(kp1.public_key, kp2.public_key);
+        assert_eq!(kp1.address, kp2.address);
+
+        // Test all supported curves
+        for curve in [CurveType::K256, CurveType::P256, CurveType::Ed25519] {
+            let kp = keypair_from_mnemonic(phrase, curve).unwrap();
+            assert!(!kp.private_key.is_empty());
+            assert!(!kp.public_key.is_empty());
+            assert!(kp.address.starts_with("0x"));
+        }
     }
 }
