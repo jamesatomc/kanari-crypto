@@ -418,9 +418,9 @@ fn generate_ed25519_keypair() -> Result<KeyPair, KeyError> {
 
     // Format the public key
     let hex_encoded = hex::encode(public_key_bytes);
-    // Address: SHA3-256 of public key bytes (full 32-byte hash)
+    // Address: SHA3-256 of public key hex string (consistent with import paths)
     let mut hasher = Sha3_256::default();
-    hasher.update(public_key_bytes);
+    hasher.update(hex_encoded.as_bytes());
     let digest = hasher.finalize();
     let address = format!("0x{}", hex::encode(digest));
     let raw_private_key = hex::encode(private_key_bytes);

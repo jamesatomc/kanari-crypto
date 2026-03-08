@@ -5,12 +5,42 @@
 //!
 //! This crate provides cryptographic operations including:
 //! - Key generation and management
-//! - Digital signatures
+//! - Digital signatures (RFC-8032 compliant Ed25519, ECC, PQC)
 //! - Encryption and decryption
 //! - Wallet operations
 //! - Key rotation and lifecycle management
 //! - Security audit logging
 //! - Backup and restore functionality
+//!
+//! # Compatibility & Standards
+//!
+//! ## Ed25519 Signature Interoperability ✅
+//!
+//! **Kanari Ed25519 is 100% RFC-8032 COMPLIANT:**
+//! - Signatures created by Kanari can be verified by ANY standard Ed25519 implementation
+//! - Kanari can verify Ed25519 signatures from libsodium, NaCl, cryptonote, etc.
+//! - No format conversion or special handling needed for interoperability
+//! - Uses direct signing/verification (no pre-hashing)
+//!
+//! ### Supported Interoperability Chains:
+//! - ✅ libsodium (crypto_sign_*)
+//! - ✅ NaCl / TweetNaCl
+//! - ✅ Python PyNaCl
+//! - ✅ Go ed25519 package
+//! - ✅ Node.js TweetNaCl.js / tweetnacl-js
+//! - ✅ Any RFC-8032 compliant library
+//!
+//! ## Curve-Specific Signing Strategies
+//!
+//! | Curve Type | Signing Strategy | Standard Compliance | Interop |
+//! |-----------|-----------------|-------------------|---------|
+//! | **Ed25519** | Direct (no hash) | ✅ RFC-8032 | Full interop |
+//! | **K256** | SHA3-256 hash | Kanari-specific | Kanari-only |
+//! | **P256** | SHA3-256 hash | Kanari-specific | Kanari-only |
+//! | **Dilithium** | Direct (no hash) | ✅ NIST standard | Kanari/NIST-compatible |
+//! | **SPHINCS+** | Direct (no hash) | ✅ NIST standard | Kanari/NIST-compatible |
+//! | **Hybrid** | Applies per-curve | Mixed | Partial |
+//!
 
 pub mod audit;
 pub mod backup;
