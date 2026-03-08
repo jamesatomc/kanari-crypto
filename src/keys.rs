@@ -223,8 +223,8 @@ impl FromStr for CurveType {
 impl KeyPair {
     /// Export private key in a wrapper that zeroizes on drop
     /// Prefer this API to avoid accidental long-lived clones of secret material.
-    pub fn export_private_key_secure(&self) -> zeroize::Zeroizing<String> {
-        zeroize::Zeroizing::new(self.private_key.to_string())
+    pub fn export_private_key_secure(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.private_key.to_string())
     }
 
     /// Get public key as reference (avoid unnecessary cloning)
@@ -731,8 +731,6 @@ pub fn keypair_from_private_key(
     private_key: &str,
     curve_type: CurveType,
 ) -> Result<KeyPair, KeyError> {
-    use zeroize::Zeroize;
-
     // Remove kanari prefix if present
     let raw_private_key = extract_raw_key(private_key);
 
@@ -1035,7 +1033,7 @@ pub fn generate_mnemonic(word_count: usize) -> Result<String, KeyError> {
             )));
         }
     };
-    let mut entropy = zeroize::Zeroizing::new(vec![0u8; entropy_bits / 8]);
+    let mut entropy = Zeroizing::new(vec![0u8; entropy_bits / 8]);
     OsRng.fill_bytes(&mut entropy);
     let mnemonic =
         Mnemonic::from_entropy(&entropy).map_err(|e| KeyError::GenerationFailed(e.to_string()))?;
@@ -1044,7 +1042,7 @@ pub fn generate_mnemonic(word_count: usize) -> Result<String, KeyError> {
 
 /// Struct representing an imported wallet with private key, public key, and address
 pub struct ImportedWallet {
-    pub private_key: zeroize::Zeroizing<String>,
+    pub private_key: Zeroizing<String>,
     pub public_key: String,
     pub address: String,
 }
@@ -1752,8 +1750,7 @@ mod tests {
         let display = format!("{}", curve);
 
         assert_eq!(
-            display,
-            "Ed25519Dilithium3",
+            display, "Ed25519Dilithium3",
             "Display format must be correct"
         );
     }

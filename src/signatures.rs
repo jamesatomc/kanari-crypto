@@ -158,7 +158,7 @@ use pqcrypto_traits::sign::SecretKey as PqcSecretKeyTrait;
 use pqcrypto_traits::sign::{
     DetachedSignature as PqcDetachedTrait, PublicKey as PqcPublicKeyTrait,
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::keys::CurveType;
 
@@ -200,7 +200,6 @@ const ED25519_PUBLIC_KEY_LEN: usize = 32;
 /// Uses zeroize crate for secure memory clearing with compiler fence
 /// to prevent optimization that could leave sensitive data in memory
 pub fn secure_clear(data: &mut [u8]) {
-    use zeroize::Zeroize;
     data.zeroize();
     // Add a black_box to prevent compiler from optimizing away the zeroization
     std::hint::black_box(data);
@@ -407,8 +406,6 @@ fn sign_message_hybrid_ed25519(
 /// This pre-hashing strategy is **Kanari-specific** for domain separation across curves.
 /// It differs from K256-native tools that may use different hashing.
 fn sign_message_k256(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, SignatureError> {
-    use zeroize::Zeroize;
-
     // ⚠️ KANARI-SPECIFIC: Pre-hash the message with SHA3-256 for domain separation
     let mut hasher = Sha3_256::default();
     hasher.update(message);
@@ -451,8 +448,6 @@ fn sign_message_k256(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, S
 /// Both use SHA3-256 pre-hashing for Kanari domain separation.
 /// This differs from P256-native tools (NIST) that may use different schemes.
 fn sign_message_p256(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, SignatureError> {
-    use zeroize::Zeroize;
-
     // ⚠️ KANARI-SPECIFIC: Pre-hash the message with SHA3-256 (same as K256 for consistency)
     let mut hasher = Sha3_256::default();
     hasher.update(message);
@@ -503,8 +498,6 @@ fn sign_message_p256(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, S
 /// This architectural choice provides domain separation between curve types
 /// while maintaining compatibility with standard implementations.
 fn sign_message_ed25519(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, SignatureError> {
-    use zeroize::Zeroize;
-
     // RFC-8032 COMPLIANT: Sign the message DIRECTLY without pre-hashing
     let mut private_key_bytes = hex::decode(private_key_hex)
         .map_err(|_| SignatureError::InvalidPrivateKey("Invalid private key".to_string()))?;
@@ -1267,7 +1260,6 @@ pub fn verify_signature_ed25519(
     let mut sig_array = [0u8; 64];
     sig_array.copy_from_slice(signature);
     let signature = Ed25519Signature::from_bytes(&sig_array);
-    use zeroize::Zeroize;
     sig_array.zeroize();
 
     // Normalize and decode public key
